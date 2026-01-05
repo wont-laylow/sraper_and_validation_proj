@@ -25,7 +25,7 @@ class ConfidenceScorer:
     def origin_confidence(self, origin: str) -> str:
         if not origin:
             return "LOW"
-        return "HIGH" if "made in" in origin.lower() else "MEDIUM"
+        return "HIGH"
 
     def _normalize_ingredient(self, ing: str) -> str:
         return ing.lower().strip()

@@ -3,6 +3,7 @@ Main script for product enrichment pipeline.
 """
 
 import requests
+import time
 import re
 from typing import List
 from day_1.schema import Product
@@ -13,6 +14,24 @@ import pandas as pd
 from day_2.confidence_rating import ConfidenceScorer
 
 load_dotenv(override=True)
+
+MARKETPLACES = ("amazon.", "jumia.", "aliexpress.", "ebay.", "yesstyle.")
+
+# confidence scoring weights
+CONF_SCORE = {
+    "HIGH": 2,
+    "MEDIUM": 1,
+    "LOW": 0,
+}
+
+def overall_confidence_score(e):
+    return (
+        CONF_SCORE[e.official_page_confidence]
+        + CONF_SCORE[e.brand_website_confidence]
+        + CONF_SCORE[e.barcode_confidence]
+        + CONF_SCORE[e.origin_confidence]
+        + CONF_SCORE[e.ingredients_confidence]
+    )
 
 
 class GoogleProductEnricher(ConfidenceScorer):
@@ -93,14 +112,27 @@ class GoogleProductEnricher(ConfidenceScorer):
 
 
     def _extract_country(self, text: str):
-        for key in ("made in", "manufactured in", "origin"):
-            if key in text.lower():
-                return text
+        if not text:
+            return None
+
+        match = re.search(
+            r"(made in|manufactured in|country of origin)\s*[:\-]?\s*([A-Za-z\s]+)",
+            text,
+            flags=re.I,
+        )
+
+        if match:
+            return match.group(2).strip()
+
         return None
 
     def _looks_official(self, link: str, brand: str) -> bool:
-        return brand.lower().replace(" ", "") in link.lower()
-    
+        if any(m in link.lower() for m in MARKETPLACES):
+            return False
+
+        brand_key = brand.lower().replace(" ", "").replace("-", "")
+        return brand_key in link.lower()
+        
     def _extract_external_ingredients(self, text: str):
         """
         Extract INCI-style ingredient lists from snippet text.
@@ -170,7 +202,8 @@ class GoogleProductEnricher(ConfidenceScorer):
                     brand_site = f"{link.split('/')[0]}//{link.split('/')[2]}"
 
                 if not barcode:
-                    barcode = self._extract_barcode(snippet)
+                    raw_barcode = self._extract_barcode(snippet)
+                    barcode = str(raw_barcode) if raw_barcode else None
 
                 if not origin:
                     origin = self._extract_country(snippet)
@@ -195,16 +228,19 @@ class GoogleProductEnricher(ConfidenceScorer):
             brand_site
         )
 
-        barcode_conf = self.barcode_confidence(
-            barcode, source_is_retailer=True
+        barcode_conf = (
+            self.barcode_confidence(barcode, source_is_retailer=True)
+            if barcode and barcode.isdigit()
+            else "LOW"
         )
 
         origin_conf = self.origin_confidence(
             origin
         )
 
-        ingredients_conf = self.ingredients_confidence(
-            ingredients, product.ingredients
+        ingredients_conf = (
+            self.ingredients_confidence(ingredients, product.ingredients)
+            if ingredients else "LOW"
         )
 
 
@@ -243,7 +279,7 @@ class GoogleProductEnricher(ConfidenceScorer):
         rows = []
 
         for e in enriched_products:
-            rows.rows.append({
+            rows.append({
             # core identifiers
             "product_name": e.product_name,
             "brand": e.brand,
@@ -256,7 +292,7 @@ class GoogleProductEnricher(ConfidenceScorer):
             "brand_website_confidence": e.brand_website_confidence,
 
             # commercial identifiers
-            "barcode_or_sku": e.barcode_or_sku,
+            "barcode_or_sku": str(e.barcode_or_sku) if e.barcode_or_sku else None,
             "barcode_confidence": e.barcode_confidence,
 
             # origin information
@@ -270,6 +306,8 @@ class GoogleProductEnricher(ConfidenceScorer):
             ),
             "ingredients_confidence": e.ingredients_confidence,
 
+            "overall_confidence_score": overall_confidence_score(e),
+
             # provenance
             "source_urls": "; ".join(str(url) for url in e.source_urls),
             })
@@ -280,8 +318,7 @@ class GoogleProductEnricher(ConfidenceScorer):
 
 def main():
     df = pd.read_csv("day_1/day_1_final_scraped.csv") 
-    df_sample = df.sample(n=10, random_state=42)
-
+    df_sample = df.sample(n=10, random_state=int(time.time()))
     products = []
 
     for _, row in df_sample.iterrows():
@@ -301,19 +338,27 @@ def main():
     api_key=os.getenv("GOOGLE_API_KEY"),
     cx=os.getenv("GOOGLE_CSE_ID"))
 
-
-
     enriched_products = []
 
     for product in products:
         enriched_products.append(enricher.enrich_product(product))
 
 
-    enricher.save_enriched_products(enriched_products, "day_2/enriched_products.csv")
+    ranked = sorted(
+        enriched_products,
+        key=overall_confidence_score,
+        reverse=True
+    )
+
+    top_10 = ranked[:10]
+
+    enricher.save_enriched_products(
+        top_10,
+        "day_2/enriched_products.csv"
+    )
 
     print("DONE")
 
-    
 if __name__ == "__main__":
 
     main()
