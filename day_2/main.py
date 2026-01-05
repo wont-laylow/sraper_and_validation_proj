@@ -10,11 +10,12 @@ from day_2.schema import ProductEnrichment
 import os
 from dotenv import load_dotenv
 import pandas as pd
+from day_2.confidence_rating import ConfidenceScorer
 
 load_dotenv(override=True)
 
 
-class GoogleProductEnricher:
+class GoogleProductEnricher(ConfidenceScorer):
     """
     Enriches skincare products using Google Custom Search API.
     """
@@ -63,10 +64,33 @@ class GoogleProductEnricher:
         return response.json().get("items", [])
     
     # extraction utilities
-
     def _extract_barcode(self, text: str):
-        match = re.search(r"\b(\d{8,14})\b", text)
-        return match.group(1) if match else None
+        """
+        Extract barcode / SKU only when explicitly labeled.
+        Accepts EAN, UPC, GTIN, SKU patterns.
+        """
+
+        if not text:
+            return None
+
+        text = text.lower()
+
+        # Require barcode context
+        KEYWORDS = ("barcode", "sku", "ean", "upc", "gtin")
+
+        if not any(k in text for k in KEYWORDS):
+            return None
+
+        # Extract numeric candidates
+        matches = re.findall(r"\b\d{8,14}\b", text)
+
+        for m in matches:
+            # Extra safety: ensure pure digits
+            if m.isdigit():
+                return m  # return FIRST valid barcode
+
+        return None
+
 
     def _extract_country(self, text: str):
         for key in ("made in", "manufactured in", "origin"):
@@ -77,6 +101,46 @@ class GoogleProductEnricher:
     def _looks_official(self, link: str, brand: str) -> bool:
         return brand.lower().replace(" ", "") in link.lower()
     
+    def _extract_external_ingredients(self, text: str):
+        """
+        Extract INCI-style ingredient lists from snippet text.
+        """
+        if not text:
+            return None
+
+        text_lower = text.lower()
+
+        # Require INCI context
+        if "ingredient" not in text_lower:
+            return None
+
+        # Try to split at 'ingredients' or 'ingredients (inci)'
+        parts = re.split(r"ingredients?\s*(?:\(inci\))?\s*[:.\-]", text, flags=re.I)
+
+        if len(parts) < 2:
+            return None
+
+        candidate = parts[1]
+
+        # Cut off common non-ingredient sections
+        candidate = re.split(
+            r"(how to use|key ingredients|skin concern|area of application|cruelty)",
+            candidate,
+            flags=re.I,
+        )[0]
+
+        # Remove dates
+        candidate = re.sub(r"\b[A-Z][a-z]{2}\s+\d{1,2},\s+\d{4}\b", "", candidate)
+
+        # Keep only comma-separated chemical-style lists
+        ingredients = [i.strip() for i in candidate.split(",") if len(i.strip()) > 3]
+
+        # Heuristic: INCI lists usually have multiple ingredients
+        if len(ingredients) < 3:
+            return None
+
+        return ingredients
+
 
     def enrich_product(self, product: Product) -> ProductEnrichment:
         queries = self._build_queries(product)
@@ -111,24 +175,63 @@ class GoogleProductEnricher:
                 if not origin:
                     origin = self._extract_country(snippet)
 
-                if "ingredient" in snippet.lower() or "inci" in snippet.lower():
-                    ingredients.append(snippet)
+                extracted = self._extract_external_ingredients(snippet)
+                if extracted:
+                    ingredients.extend(extracted)
 
                 if not description:
+                    if any(x in snippet.lower() for x in ("privacy", "cookie", "acknowledge")):
+                        continue
+                    if len(snippet) < 40:
+                        continue
                     description = snippet
+
+
+        official_conf = self.official_page_confidence(
+        official_page, product.brand
+        )
+
+        brand_conf = self.brand_website_confidence(
+            brand_site
+        )
+
+        barcode_conf = self.barcode_confidence(
+            barcode, source_is_retailer=True
+        )
+
+        origin_conf = self.origin_confidence(
+            origin
+        )
+
+        ingredients_conf = self.ingredients_confidence(
+            ingredients, product.ingredients
+        )
+
 
         return ProductEnrichment(
             product_name=product.product_name,
             brand=product.brand,
+
             official_product_page=official_page,
+            official_page_confidence=official_conf,
+
             brand_website=brand_site,
+            brand_website_confidence=brand_conf,
+
             barcode_or_sku=barcode,
+            barcode_confidence=barcode_conf,
+
             country_of_origin=origin,
-            external_description=description,
+            origin_confidence=origin_conf,
+
             external_ingredients=ingredients or None,
+            ingredients_confidence=ingredients_conf,
+
+            external_description=description,
             source_urls=list(sources),
         )
     
+
     def enrich_products(self, products: List[Product], limit: int = 10) -> List[ProductEnrichment]:
         enriched = []
         for product in products[:limit]:
@@ -140,16 +243,35 @@ class GoogleProductEnricher:
         rows = []
 
         for e in enriched_products:
-            rows.append({
-                "product_name": e.product_name,
-                "brand": e.brand,
-                "official_product_page": e.official_product_page,
-                "brand_website": e.brand_website,
-                "barcode_or_sku": e.barcode_or_sku,
-                "country_of_origin": e.country_of_origin,
-                "external_description": e.external_description,
-                "external_ingredients": "; ".join(e.external_ingredients) if e.external_ingredients else None,
-                "source_urls": "; ".join(str(url) for url in e.source_urls),
+            rows.rows.append({
+            # core identifiers
+            "product_name": e.product_name,
+            "brand": e.brand,
+
+            # official / brand information
+            "official_product_page": e.official_product_page,
+            "official_page_confidence": e.official_page_confidence,
+
+            "brand_website": e.brand_website,
+            "brand_website_confidence": e.brand_website_confidence,
+
+            # commercial identifiers
+            "barcode_or_sku": e.barcode_or_sku,
+            "barcode_confidence": e.barcode_confidence,
+
+            # origin information
+            "country_of_origin": e.country_of_origin,
+            "origin_confidence": e.origin_confidence,
+
+            # descriptive enrichment
+            "external_description": e.external_description,
+            "external_ingredients": (
+                "; ".join(e.external_ingredients) if e.external_ingredients else None
+            ),
+            "ingredients_confidence": e.ingredients_confidence,
+
+            # provenance
+            "source_urls": "; ".join(str(url) for url in e.source_urls),
             })
 
         df_out = pd.DataFrame(rows)
