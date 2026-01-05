@@ -15,7 +15,62 @@ from day_2.confidence_rating import ConfidenceScorer
 
 load_dotenv(override=True)
 
-MARKETPLACES = ("amazon.", "jumia.", "aliexpress.", "ebay.", "yesstyle.")
+SITES = (
+    # global SITES
+    "amazon.",
+    "ebay.",
+    "aliexpress.",
+    "alibaba.",
+    "temu.",
+    "shein.",
+    "wish.",
+
+    # beauty retailers / aggregators
+    "yesstyle.",
+    "stylekorean.",
+    "oliveyoung.",
+    "sephora.",
+    "ulta.",
+    "cultbeauty.",
+    "lookfantastic.",
+    "beautybay.",
+    "feelunique.",
+    "skinstore.",
+    "dermstore.",
+    "stylevana.",
+    "sokoglam.",
+    "beautynet.",
+
+    # regional / local ecommerce
+    "jumia.",
+    "ksisters.",
+    "elbeauty.",
+    "notino.",
+
+    # forums / community / UGC
+    "reddit.",
+    "reddit.com",
+    "quora.",
+    "stackexchange.",
+    "forum.",
+
+    # blogs / reviews / databases
+    "incidecoder.",
+    "skincarisma.",
+    "cosdna.",
+    "ewg.",
+    "medium.",
+    "wordpress.",
+    "blogspot.",
+
+    # social platforms
+    "instagram.",
+    "facebook.",
+    "twitter.",
+    "tiktok.",
+    "youtube.",
+)
+
 
 # confidence scoring weights
 CONF_SCORE = {
@@ -127,7 +182,7 @@ class GoogleProductEnricher(ConfidenceScorer):
         return None
 
     def _looks_official(self, link: str, brand: str) -> bool:
-        if any(m in link.lower() for m in MARKETPLACES):
+        if any(m in link.lower() for m in SITES):
             return False
 
         brand_key = brand.lower().replace(" ", "").replace("-", "")
@@ -354,7 +409,7 @@ def main():
 
     enricher.save_enriched_products(
         top_10,
-        "day_2/enriched_products.csv"
+        "day_2/day_2_final_enriched.csv"
     )
 
     print("DONE")
